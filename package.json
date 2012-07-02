@@ -1,0 +1,31 @@
+{
+  "name": "reavetard",
+  "version": "0.0.1",
+  "description": "CoffeeScript modules that provide AP rotation support and a host of data management and general usability enhancements for Reaver-WPS Cracker and its partner in crime, Wash-WPS Scanner",
+  "main": "index.js",
+  "dependencies": {
+    "charm": "~0.1.0",
+    "commander": "~0.5.2",
+    "sqlite3": "~2.1.5"
+  },
+  "devDependencies": {},
+  // TODO: Clean up test files and add to repository
+  // "scripts": {
+  //   "test": "echo \"Error: no test specified\" && exit 1"
+  // },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eibbors/reavetard.git"
+  },
+  "keywords": [
+    "wps",
+    "pin",
+    "crack",
+    "wifi",
+    "reaver",
+    "wash",
+    "backtrack"
+  ],
+  "author": "Robbie Saunders (aka eibbors)",
+  "license": "GPL"
+}
