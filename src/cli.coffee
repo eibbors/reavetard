@@ -9,12 +9,6 @@
 commander = require 'commander'
 charm = require('charm')(process.stdout)
 
-# Once charm has been loaded, we need to manually implement ^C functionality
-exit = ->
-  charm.display 'reset'
-  process.exit()
-charm.on '^C', exit
-
 # Core helpers used to allow more user-friendly data structures
 # ----------------------------------------------------------------------
 
@@ -27,7 +21,7 @@ arrwrite = (arr, cd=false) ->
       else cwrite.apply null, a
     else
       if cd then cdwrite.apply null, [a]
-      cwrite.apply null, [a]
+      else cwrite.apply null, [a]
 
 # Used to write and color something in one fell swoop
 cwrite = ->
@@ -42,12 +36,10 @@ cwrite = ->
       charm.write arguments[1]
 
 # Same as above, but assumes an extra 'display' argument at arguments[0]
-cdwrite = ->
-  if arguments.length >= 2
-    charm.display 'reset'
-    charm.display arguments[0]
-    cwrite.apply null, arguments[1..]
-
+cdwrite = (disp, args...)->
+  charm.display 'reset'
+  charm.display disp
+  cwrite args...
 
 # Constant strings / printable arrays / widgets?
 # ----------------------------------------------------------------------
@@ -59,7 +51,8 @@ REAVETARD_TITLE = [
   ['bright',     56, ' -   █  ▀  █▀▀▀▀ █▀▀▀█ ▀▄ ▄▀ █▀▀▀▀  █  ▄ █▀▀▀█  █  ▀ ▄▀▀▀█   -\n']
   ['bright',     55, ' -   ▀▀     ▀▀▀▀  ▀▀▀ ▀  ▀    ▀▀▀▀   ▀▀▀  ▀▀▀ ▀ ▀▀    ▀▀▀▀▀  -\n']
   ['reset',  'blue', ' -    ~ Reaver Tools for AP Rotation & Data Management  ~    -\n']
-  ['dim', 'magenta', ' -------------------------------------------------------------\n\n']
+  ['dim', 'magenta', ' -------------------------------------------------------------\n']
+  ['reset', '\n']
 ]
 
 REAVETARD_TITLE_S = [
@@ -78,41 +71,53 @@ REAVETARD_MENU = [
 
 # Full blown title
 exports.title = (full=true)->
-  if full then arrwrite REAVETARD_TITLE, false
-  else arrwrite REAVETARD_TITLE_S, false
+  if full then arrwrite REAVETARD_TITLE, true
+  else arrwrite REAVETARD_TITLE_S, true
   return @
 
 # Prints the menu options available during an interactive session (soon...)
 exports.menu = ->
-  arrwrite REAVETARD_MENU
+  arrwrite REAVETARD_MENU, true
   return @
 
 # Waaahhhh shhhit son, dis here is the real-time survey result 'hit'
 # status codes: C='Complete', W='Work In Progress', N='New'
 exports.washHit = (station, status) ->
-  if station.locked then charm.display('dim') # Takes the focus off of locked stations
+  colors = { C:72, W: 'blue', N: 5 }
+  c = colors[status]
+  if station.locked then c = 'red'
+  @label c, 'st', status
+  @label c, 'rssi', station.rssi
+  @label c, 'bssid', station.bssid 
+  @label c, 'ch', station.channel
+  @label c, 'essid', station.essid
   if status is 'C'
-    cwrite 57, "[C] rssi:#{station.rssi} bssid:#{station.bssid} ch:#{ch} essid:'#{station.essid}'\n"
-    cwrite 57, " |- pin:#{station.session?.pin} key:'#{station.key}'"
+    @label c, 'pin', station.session?.pin
+    @label c, 'key', station.key
+    @label c, 'checked', (Number(station.session.ki1) + Number(station.session.ki2))
   else if status is 'W'
-    progress = Number(station.attempts/110).toFixed(2) + '%'
-    if station.attempts > 10000 or station.session.phase is 1 then progress += " pin:#{station.session.pin}____"
-    cwrite 'magenta', "[W] rssi:#{station.rssi} bssid:#{station.bssid} ch:#{ch} essid:'#{station.essid}'\n"
-    cwrite 'magenta', " |- eliminated:#{station.attempts}/11000 ~#{progress} phase:#{station.phase}"
-  else if status is 'N' 
-    cwrite 'blue', "[C] rssi:#{station.rssi} bssid:#{station.bssid} ch:#{ch} essid:'#{station.essid}'"
-  if station.locked then cdwrite 'bright', 'red', ' locked\n' else cwrite 'green', ' unlocked\n'
-  cdwrite 'reset', '\n'
+    @label c, 'progress', "#{Number(station.attempts/110).toFixed(2)}%"
+    @label c, 'phase', station.session.phase
+    @label c, 'checks', (Number(station.session.ki1) + Number(station.session.ki2))
+    if station.attempts > 10000 or station.session.phase is 1 then @label c, 'pin', "#{station.session.pin}"
+  if station.device?
+    @label c, 'device', station.device.name
+    @label c, 'manuf.', station.device.manufacturer
+    @label c, 'model', "#{station.device.model}/#{station.device.number}"
+  if station.locked then @label c, '!', 'LOCKED'
+  charm.write '\n'  
   return @
 
-# Helper to print a bold label caption with normal value (or dim ifnot enabled)
-exports.label = (ltext, rtext, enabled = true) ->
-  charm.display 'bright'
-  charm.write ltext
-  if enabled then charm.display 'reset'
-  else charm.display 'dim'
-  charm.write rtext
+# Prints a "label", which is looks like: ltext/RTEXT (caps = bright)
+exports.label = (fg, ltext, rtext) ->
+  charm.display('reset').foreground(fg).write("#{ltext}/")
+  charm.display('bright').foreground(fg).write("#{rtext} ").display('reset')
   return @
+
+# Prints labels for an array of keys that correspond to an object's prop's
+exports.labels = (color, keys, obj) ->
+  for key in keys
+    @label color, key, obj[key]
 
 # *See cwrite above*
 exports.cwrite = (args...) ->
@@ -138,4 +143,4 @@ exports.background = charm.background
 exports.display = charm.display
 
 # Just in case, expose a reference to our charmed stdout stream
-exports._c = charm
+exports._c = charm;

@@ -54,7 +54,7 @@ airmon = exports.airmon =
                 removed:    ifrow[5] is ' (removed)'
               else
                 monok = /\s+\(monitor mode enabled on (\w+)\)/.exec line
-                if monok then results.newMon = monok[1]
+                if monok then results.enabledOn = monok[1]
         cb results, stdout, stderr 
 
 
@@ -70,26 +70,13 @@ airmon = exports.airmon =
     @getInterfaces (ifaces) ->
       phys = {}
       for iface in ifaces
-        if iface.driver?.length? 
-          pi = iface.driver[1][1...-1]
-          phys[pi] ?= []
-          phys[pi].push iface
+        phys[iface.phyid] ?= []
+        phys[iface.phyid].push iface
       cb phys
   
   # Start monitor mode on an interface, call back 
   start: (iface, cb) ->
-    @run ['start', iface], (res, sout) ->
-      if res.newMon then cb res.newMon
-      else throw "ERROR: Monitor mode not enabled? See output:\n'''\n#{sout}\n'''"
+    @run ['start', iface], cb
         
   stop: (iface, cb) ->
     @run ['stop', iface], cb
-
-
-# airmon.getInterfaces(console.log)
-# airmon.getPhysicalInterfaces(console.log)
-airmon.start('wlan1', console.log)
-# for i in [0..4]
-#   console.log i
-setTimeout -> airmon.stop "mon0", console.log
-  , 4000

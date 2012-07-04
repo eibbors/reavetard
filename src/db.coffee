@@ -32,6 +32,10 @@ class ReaverData
   checkHistory: (bssid, cb) ->
     @db.all "SELECT * FROM history WHERE bssid = '#{bssid}'", cb
 
+  # Query history/survey data for an AP by bssid
+  checkSurvey: (bssid, cb) ->
+    @db.all "SELECT * FROM survey WHERE bssid = '#{bssid}'", cb
+
   # Loads relevant session data, given bssid or filename (if non-standard)
   loadSession: (bssid, filename) =>
     if bssid? and not filename?
