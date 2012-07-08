@@ -5,6 +5,9 @@
 # Author: Robbie Saunders http://eibbors.com/[/p/reavetard]
 # ==============================================================================
 
+# Setting this to whichever ID you habitually use can save time
+exports.DEFAULT_INTERFACE = 'mon0'
+
 # Reaver 1.3+, by default, explicitly defines these keys then sequentially
 # exhausts the remaining keys. You can tune these to better match your
 # own mileage or update these should Reaver's values change.
@@ -25,16 +28,16 @@ exports.WASH_DEFAULT_ARGS =
 
 # Reaver's default configuration provides the station it will be targetting
 # These values have worked for me across all vulnerable devices so far...
-exports.REAVER_DEFAULT_ARGS = (station) ->
+exports.REAVER_DEFAULT_ARGS = (station, iface) ->
   veryVerbose: true # DO NOT REMOVE
   bssid: station.bssid # DO NOT REMOVE
   auto: true 
   # DO NOT REMOVE ANYTHING ABOVE THIS LINE
-  channel: station.channel # Channel hopping is the enemy of multi-ap cracking
+  channel: station.channel ? undefined # Channel hopping is the enemy of multi-ap cracking
   dhSmall: true # Improves crack speed
   noNacks: true # A necessecity for long range cracking because of flooding
   # ANYTHING BEFORE THIS LINE SHOULD RARELY NEED TO BE CHANGED
-  interface: 'mon0'
+  interface: iface ? @DEFAULT_INTERFACE ? 'mon0'
 
-
+exports.CONSECUTIVE_FAILURES_LIMIT = 5
 

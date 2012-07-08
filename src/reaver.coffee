@@ -8,6 +8,8 @@
 # -------------------------
 events = require 'events'
 {spawn, exec} = require 'child_process'
+{REAVER_DEFAULT_ARGS, CONSECUTIVE_FAILURE_LIMIT} = require './config'
+cli = require './cli'
 
 # Arguments supported by reaver in the format:
 # key: [shortFlag, fullFlag, description, includesValue]
@@ -24,7 +26,8 @@ REAVER_ARGS =
   auto:           ['-a', '--auto', 'Auto detect the best advanced options for the target AP', false]
   fixed:          ['-f', '--fixed', 'Disable channel hopping', false]
   use5ghz:        ['-5', '--5ghz', 'Use 5GHz 802.11 channels', false]
-  verbose:        ['-vv', '--verbose', 'Display non-critical warnings (-vv for more)', false]
+  veryVerbose:    ['-vv', '--verbose', 'Display non-critical warnings (-vv for more)', false]
+  verbose:        ['-v', '--verbose', 'Display non-critical warnings (-vv for more)', false]
   quiet:          ['-q', '--quiet', 'Only display critical messages', false]
   help:           ['-h', '--help', 'Show help', false]
   pin:            ['-p', '--pin', 'Use the specified 4 or 8 digit WPS pin', true]
@@ -102,6 +105,7 @@ class Reaver extends events.EventEmitter
       totalChecked: 0
       timeToCrack: null
       secondsPerPin: null
+      startedAt: new Date()
 
   # Setting a duration will switch to exec vs. real time parsing (spawn)
   start: (args) =>
@@ -112,14 +116,13 @@ class Reaver extends events.EventEmitter
         [flag, option, desc, inclVal] = value
         if @[key] or inclVal then args.push flag
         if inclVal then args.push @[key]
-    console.log args
     # kill the existing process, then spawn a new one and bind to the data event
     @stop()
     @proc = spawn 'reaver', args
     @proc.stdout.on 'data', @process
     @proc.stderr.on 'data', @process
 
-  stop: () ->
+  stop: () =>
     if @proc
       @proc.kill()
       @emit 'exit', true
@@ -150,14 +153,18 @@ class Reaver extends events.EventEmitter
           if @status.pin isnt res[1]
             @metrics.totalChecked++
             @metrics.consecutiveFailures = 0
-            if @status.phase is 0 and @status.pin[0..3] is res[1][0..3]
-              @status.phase = 1
-              @emit 'completed', 1, { pin: res[1][0..3] }
+            if @status.pin isnt null
+              if @status.phase is 0 and @status.pin[0..3] is res[1][0..3]
+                @status.phase = 1
+                @emit 'completed', 1, { pin: res[1][0..3] }
             @status.pin = res[1]
           @status.sequenceDepth = 0
         when 'sending', 'received'
           if REAVER_PACKET_SEQ[res[1]] > @status.sequenceDepth
             @status.sequenceDepth = REAVER_PACKET_SEQ[res[1]]
+            @status.sequenceNew = true
+          else
+            @status.sequenceNew = false
         when 'timedOut', 'wpsFailure'
           @metrics.consecutiveFailures++
           @metrics.totalFailures++
@@ -178,7 +185,148 @@ class Reaver extends events.EventEmitter
           @metrics.timeToCrack = res[1..2].join(' ')
         when 'crackedSSID'
           @emit 'completed', 2, { ssid: res[1] }
-      @emit 'status', matched, @status, res
+      @emit 'status', matched, @status, @metrics, res
 
 
-module.exports = Reaver
+# Moved from reavetard.coffee since almost all of the code was heavily
+# related to the Reaver class above.
+class ReaverQueueManager extends events.EventEmitter
+
+  constructor: (stations, @interface) ->
+    @priority = [] # cracking sessions that are working
+    @secondary = [] # sessions with non-fatal issues
+    @finished = [] # complete and/or completely fucked targets
+    for station in stations
+      station.priority = true
+      @priority.push station
+    @active = null
+    @interface ?= config.DEFAULT_INTERFACE 
+    @solitaire = stations.length <= 1
+
+  # Will stop the active process and start a passed station
+  # Calls @next if station is not provided
+  start: (station) =>
+    if @active or @reaver then @stop('skipped') 
+    if station then @active = station
+    else @active = @next()
+    if @active # next may return false so we gotta check
+      # if this is the only station we have, then set solitaire flag
+      if @priority.length is 0 and @secondary.length is 0 then @solitaire = true
+      @reaver = new Reaver(REAVER_DEFAULT_ARGS(@active, @interface))
+      # Setup our event listeners for the update/completed events
+      @reaver.on 'status', @handleUpdates
+      @reaver.on 'completed', @handleCompleted
+      @reaver.start()
+      cli.cdwrite('reset', 'magenta', '\n New reaver process launched for ')
+         .cdwrite('bright', 'magenta', "#{@active.essid}")
+
+  # Returns the next queued station or emits end:empty event and returns false
+  next: () =>
+    if @priority.length > 0
+      @priority.shift()
+    else if @secondary.length > 0
+      @secondary.shift()
+    else
+      @emit 'end', 'empty', @finished
+      false
+
+  # Stops the active process and stashes it in one of the 3 arrays based
+  # on the reason argument. Any key/value pairs of details argument are 
+  # passed on to station before being pushed to its destination.
+  stop: (reason, results) =>
+    # Always stop the running process and copy over results
+    if @reaver
+      @reaver.stop()
+      delete @reaver
+    if results?
+      (@active[k] = v) for k,v of results
+    switch reason
+      when 'killed' # 
+        @finished.push @active
+        @finished = @finished.concat(@priority, @secondary)
+        @emit 'end', 'killed', @finished
+      when 'skipped', 'wait' # Skipped or ran into temporary issue
+        if not @solitaire
+          if @active.priority then @priority.push @active 
+          else @secondary.push @active
+      when 'cracked'
+        @active.success = true
+        @finished.push @active
+      when 'fatal' # There was a deal breaker, like no device communication
+        @active.success = false
+        @finished.push @active
+      else # Some unknown issue? Push to second string queue
+        # Set priority to false? (currently will put back into priority queue after one revolution)
+        @secondary.push @active
+    # Always clear the active station reference
+    @active = null
+    if reason isnt 'killed' then @emit 'stopped'
+
+  # Used to verify some condition by calling fn after period (milliseconds)
+  # has elapsed, then calling success or failure based on fn's return value
+  # If isInterval, then each function will be passed the interval object, 
+  # in order to facilitate clearing / etc.
+  verify: (fn, period, success, failure, isInterval=false) =>
+    self = @
+    if typeof(fn) isnt 'function'
+      if fn then result = success else result = failure 
+      if isInterval 
+        iv = setInterval(( => result.apply(null, [self, iv])), period)
+      else 
+        setTimeout((=> result.apply(null, [self, false])), period)
+    else
+      result = (interval=false) => 
+        res = fn.apply(null, [self, interval])
+        if res then success.apply(null, [self, interval])
+        else failure.apply(null, [self, interval])
+      if isInterval
+        iv = setInterval(( => result.apply(null, [iv])), period)
+      else
+        setTimeout( result, period )
+
+
+  handleUpdates: (update, status, metrics, data) =>
+    switch update
+      when 'tryingPin'
+        cli.cdwrite('reset', 250, '\n Trying pin ')
+           .cdwrite('bright', 'blue', "#{status.pin}")
+           .cdwrite('reset', 250, '::[          ]')
+        cli._c.left(11) 
+      when 'sending', 'received'
+        if status.sequenceNew 
+          BARCOLOR = [ 54, 55, 56, 18, 19, 20, 21, 22, 31, 23 ]
+          cli.cdwrite 'reset', BARCOLOR[status.sequenceDepth-1], '█'
+        else 
+          if status.sequenceDepth is 0
+            cli.cdwrite 'reset', 'red', '▀~na'
+      when 'timedOut'
+        cli.cwrite 'red', '▀▄~to'
+        cli._c.right 7 - status.sequenceDepth
+        cli.cwrite 250, ":[          ]"
+        cli._c.left 11
+        cli.cwrite 54, '█'
+        @emit 'failed', status, metrics
+      when 'wpsFailure'
+        cli.cdwrite 'reset', 'red', "█~f#{data[1][3]}"
+        @emit 'failed', status, metrics
+      when 'rateLimit'
+        @active.priority = false # Makes sure we move onto others if all priorities lock up
+        cli.cdwrite 'bright', 'red', '\n LOCKING DETECTED'
+        if @solitaire then cli.cdwrite 'reset','red', ' - waiting (solitaire flag set)'
+        else @stop('wait')
+    if metrics.consecutiveFailures >= CONSECUTIVE_FAILURE_LIMIT
+      @stop('failures')
+     
+  handleCompleted: (phase, obj) =>
+    if phase is 1
+      @active.pin = obj.pin
+      cli.cwrite 'green', " Phase 1 completed! pin: #{obj.pin}____"
+    if phase is 2
+      for k,v of obj
+        @active.results[k] = v
+        cli.cwrite 'green', " Phase 2 completed! #{k}: #{v}"
+        if k is 'ssid' # sent last, meaning we can start the next one
+          @stop('cracked')
+
+module.exports.Reaver = Reaver
+module.exports.ReaverQueueManager = ReaverQueueManager

@@ -9,7 +9,6 @@
 {exec} = require 'child_process'
 cli = require './cli'
 
-
 airmon = exports.airmon = 
 
   # Execute airmon-ng + args and call back fancy parsed output
@@ -54,7 +53,7 @@ airmon = exports.airmon =
                 removed:    ifrow[5] is ' (removed)'
               else
                 monok = /\s+\(monitor mode enabled on (\w+)\)/.exec line
-                if monok then results.newMon = monok[1]
+                if monok then results.enabledOn = monok[1]
         cb results, stdout, stderr 
 
 
@@ -70,26 +69,45 @@ airmon = exports.airmon =
     @getInterfaces (ifaces) ->
       phys = {}
       for iface in ifaces
-        if iface.driver?.length? 
-          pi = iface.driver[1][1...-1]
-          phys[pi] ?= []
-          phys[pi].push iface
+        phys[iface.phyid] ?= []
+        phys[iface.phyid].push iface
       cb phys
   
-  # Start monitor mode on an interface, call back 
-  start: (iface, cb) ->
-    @run ['start', iface], (res, sout) ->
-      if res.newMon then cb res.newMon
-      else throw "ERROR: Monitor mode not enabled? See output:\n'''\n#{sout}\n'''"
+  # Start monitor mode on an interface, return parsed results via callback
+  # Optionally, restrict monitor mode to a single channel with channel arg
+  start: (iface, cb, channel=false) ->
+    cmd = ['start', iface]
+    if channel then cmd.push channel
+    @run cmd, (res) ->
+      if res.enabledOn?.length > 0
+        res.success = true
+      else
+        res.success = false
+      cb res
         
+  # Stop monitor mode 
   stop: (iface, cb) ->
-    @run ['stop', iface], cb
+    @run ['stop', iface], (res) ->
+      res.success = false 
+      for iface in res.interfaces
+        if iface.removed then res.success = true
+      cb res
 
+  check: (cb) ->
+    @run ['stop', iface], (res) ->
+      res.success = false 
+      for iface in res.interfaces
+        if iface.removed then res.success = true
+      cb res
 
-# airmon.getInterfaces(console.log)
-# airmon.getPhysicalInterfaces(console.log)
-airmon.start('wlan1', console.log)
-# for i in [0..4]
-#   console.log i
-setTimeout -> airmon.stop "mon0", console.log
-  , 4000
+# iwconfig command - read/write configuration of wireless adapters
+# ----------------------------------------------------------------------
+iwconfig = exports.iwconfig =
+
+  # Execute iwconfig and call your cb function with its parsed output
+  run: (args, cb) ->
+    if Array.isArray(args) then args = args.join ' '
+    if args then cmd = "iwconfig #{args}" else cmd = 'iwconfig'
+    exec cmd, {}, (err, stdout, stderr) =>
+      console.log err, stdout, stderr
+

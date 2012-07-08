@@ -9,7 +9,7 @@
 
 # Pad (prepend 0's to) an integer to its proper key width
 padKey = (key, width) ->
-	len = Math.max(0, width - key.length)
+	len = Math.max(0, width - "#{key}".length)
 	Array(len + 1).join('0') + key
 
 # Calculate the chucksum digit of a 7-digit pin (pair of keys)
