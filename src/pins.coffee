@@ -5,7 +5,7 @@
 # ==============================================================================
 
 # These are supposedly common reaver explicitly defines them by default.
-{REAVER_DEF_KEYS} = require './config'
+{REAVER_DEFAULT_KEYS} = require './config'
 
 # Pad (prepend 0's to) an integer to its proper key width
 padKey = (key, width) ->
@@ -42,7 +42,7 @@ class WPSPinCollection
 			if key.length is 3
 				@keys[2].push key
 		# Add the explicitly defined keys passed to us
-		explicits ?= REAVER_DEF_KEYS
+		explicits ?= REAVER_DEFAULT_KEYS
 		(@keys.add k) for k in explicits
 
 	# Calculate the key at a certain index

@@ -1,6 +1,6 @@
 {
   "name": "reavetard",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "CoffeeScript modules that provide AP rotation support and a host of data management and general usability enhancements for Reaver-WPS Cracker and its partner in crime, Wash-WPS Scanner",
   "main": "index.js",
   "dependencies": {

@@ -8,7 +8,7 @@
 # -------------------------
 events = require 'events'
 {spawn, exec} = require 'child_process'
-{REAVER_DEFAULT_ARGS, CONSECUTIVE_FAILURE_LIMIT} = require './config'
+{REAVER_DEFAULT_ARGS, CONSECUTIVE_FAILURE_LIMIT, DEFAULT_INTERFACE} = require './config'
 cli = require './cli'
 
 # Arguments supported by reaver in the format:
@@ -82,13 +82,27 @@ REAVER_PACKET_SEQ =
   'M7 message': 10
   'WSC NACK': 0
 
+# Reversed version of above
+REAVER_PACKET_SEQ_S = 
+  1:  ' St '#> 
+  2:  ' Id '#> 
+  3:  ' Id '#< 
+  4:  ' M1 '#> 
+  5:  ' M2 '#< 
+  6:  ' M3 '#> 
+  7:  ' M4 '#< 
+  8:  ' M5 '#> 
+  9:  ' M6 '#< 
+  10: ' M7 '#> 
+  0:  'NACK'
+
 ### Child process wrapper for spawned reaver processes ###
 class Reaver extends events.EventEmitter
 
   constructor: (options) ->
     for own key, value of options
       @[key] = value
-    @interface ?= 'mon0'
+    @interface ?= DEFAULT_INTERFACE ? 'mon0'
     @bssid ?= null
     @proc = null
     @status =
@@ -99,8 +113,11 @@ class Reaver extends events.EventEmitter
       pin: null
       phase: 0
       sequenceDepth: -1
+      alreadyFailed: false
     @metrics = 
+      maxSeqDepth: 0
       consecutiveFailures: 0
+      timeOuts: 0
       totalFailures: 0
       totalChecked: 0
       timeToCrack: null
@@ -150,6 +167,8 @@ class Reaver extends events.EventEmitter
           @status.foundBeacon = true
           @status.associated = true
         when 'tryingPin'
+          @status.alreadyFailed = false
+          @status.sequenceDepth = 0
           if @status.pin isnt res[1]
             @metrics.totalChecked++
             @metrics.consecutiveFailures = 0
@@ -158,16 +177,19 @@ class Reaver extends events.EventEmitter
                 @status.phase = 1
                 @emit 'completed', 1, { pin: res[1][0..3] }
             @status.pin = res[1]
-          @status.sequenceDepth = 0
         when 'sending', 'received'
           if REAVER_PACKET_SEQ[res[1]] > @status.sequenceDepth
             @status.sequenceDepth = REAVER_PACKET_SEQ[res[1]]
             @status.sequenceNew = true
+            @metrics.maxSeqDepth = Math.max(@metrics.maxSeqDepth, @status.sequenceDepth)
           else
             @status.sequenceNew = false
         when 'timedOut', 'wpsFailure'
-          @metrics.consecutiveFailures++
-          @metrics.totalFailures++
+          if matched is 'timedOut' then @metrics.timeOuts++ 
+          if not @status.alreadyFailed
+            @metrics.consecutiveFailures++
+            @metrics.totalFailures++
+            @status.alreadyFailed = true
         when 'rateLimit', 'associateFailure'
           @status.associated = false 
           @status.locked = (matched is 'rateLimit')
@@ -177,16 +199,16 @@ class Reaver extends events.EventEmitter
         when 'progress'
           @metrics.secondsPerPin = res[4] ? null
         when 'crackedPSK'
-          @emit 'completed', 2, { psk: res[1] }
+          @emit 'completed', 2,  'psk', res[1]
         when 'crackedPIN'
-          @emit 'completed', 2, { pin: res[1] }
+          @emit 'completed', 2, 'pin', res[1]
         when 'crackedTime'
           @status.phase = 2
           @metrics.timeToCrack = res[1..2].join(' ')
+          @emit 'completed', 2, 'time', @metrics.timeToCrack
         when 'crackedSSID'
-          @emit 'completed', 2, { ssid: res[1] }
+          @emit 'completed', 2, 'ssid', res[1]
       @emit 'status', matched, @status, @metrics, res
-
 
 # Moved from reavetard.coffee since almost all of the code was heavily
 # related to the Reaver class above.
@@ -212,13 +234,13 @@ class ReaverQueueManager extends events.EventEmitter
     if @active # next may return false so we gotta check
       # if this is the only station we have, then set solitaire flag
       if @priority.length is 0 and @secondary.length is 0 then @solitaire = true
-      @reaver = new Reaver(REAVER_DEFAULT_ARGS(@active, @interface))
+      @active.reaverArgs ?= REAVER_DEFAULT_ARGS(@active, @interface)
+      @reaver = new Reaver(@active.reaverArgs)
       # Setup our event listeners for the update/completed events
       @reaver.on 'status', @handleUpdates
       @reaver.on 'completed', @handleCompleted
       @reaver.start()
-      cli.cdwrite('reset', 'magenta', '\n New reaver process launched for ')
-         .cdwrite('bright', 'magenta', "#{@active.essid}")
+      cli.statusBar 'procbar', "#{@active.essid ? @active.bssid}"
 
   # Returns the next queued station or emits end:empty event and returns false
   next: () =>
@@ -235,12 +257,21 @@ class ReaverQueueManager extends events.EventEmitter
   # passed on to station before being pushed to its destination.
   stop: (reason, results) =>
     # Always stop the running process and copy over results
-    if @reaver
+    if @reaver 
+      if @active 
+        @active.results ?= {}
+        @active.results.snapshots ?= { status: [], metrics: [] }
+        @active.results.snapshots.status.push @reaver.status ? 'empty'
+        @reaver.metrics.stoppedAt = new Date()
+        @active.results.snapshots.metrics.push @reaver.metrics ? 'empty'
       @reaver.stop()
       delete @reaver
-    if results?
+    if @active? and results 
       (@active[k] = v) for k,v of results
     switch reason
+      when 'paused'
+        if @active.priority then @priority.unshift @active
+        else @secondary.unshift @active
       when 'killed' # 
         @finished.push @active
         @finished = @finished.concat(@priority, @secondary)
@@ -260,7 +291,7 @@ class ReaverQueueManager extends events.EventEmitter
         @secondary.push @active
     # Always clear the active station reference
     @active = null
-    if reason isnt 'killed' then @emit 'stopped'
+    if reason isnt 'killed' then @emit 'stopped', reason
 
   # Used to verify some condition by calling fn after period (milliseconds)
   # has elapsed, then calling success or failure based on fn's return value
@@ -284,49 +315,51 @@ class ReaverQueueManager extends events.EventEmitter
       else
         setTimeout( result, period )
 
-
+  # Basically extends the Reaver class' input handlers to include printing
+  # compact status bars to stdout and stop/rotate when necessary or advantageous
   handleUpdates: (update, status, metrics, data) =>
     switch update
+      when 'waitingBeacon'
+        cli.statusBar 'beacon'
+      when 'associated'
+        @active.essid ?= data[1]
+        cli.statusBar 'associated'
       when 'tryingPin'
-        cli.cdwrite('reset', 250, '\n Trying pin ')
-           .cdwrite('bright', 'blue', "#{status.pin}")
-           .cdwrite('reset', 250, '::[          ]')
-        cli._c.left(11) 
+        cli.statusBar 'pinbar', "#{status.pin}", metrics
       when 'sending', 'received'
         if status.sequenceNew 
-          BARCOLOR = [ 54, 55, 56, 18, 19, 20, 21, 22, 31, 23 ]
-          cli.cdwrite 'reset', BARCOLOR[status.sequenceDepth-1], '█'
+          cli.statusBar status.sequenceDepth
         else 
           if status.sequenceDepth is 0
-            cli.cdwrite 'reset', 'red', '▀~na'
+            cli.statusbar 'nack'
       when 'timedOut'
-        cli.cwrite 'red', '▀▄~to'
-        cli._c.right 7 - status.sequenceDepth
-        cli.cwrite 250, ":[          ]"
-        cli._c.left 11
-        cli.cwrite 54, '█'
+        cli.statusBar('timeout')
         @emit 'failed', status, metrics
       when 'wpsFailure'
-        cli.cdwrite 'reset', 'red', "█~f#{data[1][3]}"
+        cli.statusBar "fail#{data[1][3]}"
         @emit 'failed', status, metrics
       when 'rateLimit'
-        @active.priority = false # Makes sure we move onto others if all priorities lock up
-        cli.cdwrite 'bright', 'red', '\n LOCKING DETECTED'
-        if @solitaire then cli.cdwrite 'reset','red', ' - waiting (solitaire flag set)'
-        else @stop('wait')
+        if @solitaire then cli.statusBar 'error', 'LOCKING DETECTED', 'waiting until resolved... (solitaire=true)'
+        else cli.statusBar 'error', 'LOCKING DETECTED', 'rotating target networks...'
+        @stop('wait', { priority: false, error: 'locking' })
+      when 'associateFailure'
+        @active.essid ?= data[1]
+        cli.statusBar 'error', 'CANNOT ASSOCIATE', 'aborting current target & rotating...'
+        @stop('fatal', { error: 'associateFailure' })
     if metrics.consecutiveFailures >= CONSECUTIVE_FAILURE_LIMIT
-      @stop('failures')
+      cli.statusBar 'error', 'FAILURE LIMIT TRIGGERED', 'rotating target networks...'
+      @stop('failures', { priority: false, error: 'consecutiveFailures' })
      
-  handleCompleted: (phase, obj) =>
+  handleCompleted: (phase, key, value) =>
+    if @active?
+      @active.results ?= {}
+      @active.results[key] = value 
     if phase is 1
-      @active.pin = obj.pin
-      cli.cwrite 'green', " Phase 1 completed! pin: #{obj.pin}____"
+      cli.statusBar 'success', 'Phase 1 completed!', "First 1/2 of PIN: #{value}"
     if phase is 2
-      for k,v of obj
-        @active.results[k] = v
-        cli.cwrite 'green', " Phase 2 completed! #{k}: #{v}"
-        if k is 'ssid' # sent last, meaning we can start the next one
-          @stop('cracked')
+      if key is 'ssid' # sent last, meaning we can start the next one
+        cli.statusBar 'success', 'Phase 2 completed!',"Results: #{JSON.stringify(@active.results)}"
+        @stop('cracked')
 
 module.exports.Reaver = Reaver
 module.exports.ReaverQueueManager = ReaverQueueManager

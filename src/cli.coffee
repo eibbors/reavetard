@@ -76,8 +76,8 @@ REVIEW_SELECTORS = [
   [ 'reset', 'blue', ' Targets in progress']
   ['bright', 'black', ', ']
   ['bright', 5, '-3 /']
-  [ 'reset', 5, ' New targets\n']
-  ['reset', 5, 'Note: separate multiple selections with any non-digit character, except for `-`\n']
+  ['reset', 5, ' New targets\n\n']
+  ['reset', 240, ' Note: Delimit multiple selections with any non-digit character but `-`\n']
 ]
 
 # TODO: substitute the sloppy hardcoded colors with a reference to one of these (perhaps move to config file)
@@ -94,8 +94,67 @@ REAVETARD_TARGET_ACTIONS = [
    ['bright', 'magenta', '     e(x)it : '], ['reset', 'magenta', 'End process without doing anything else\n']
 ]
 
+# Packet Sequence Progress Bar settins
+# REAVER_BAR_STYLES[sequenceDepth|key] = [bgcolor, text, <:in|>:out|<>:both ]
+REAVER_BAR_STYLES = 
+  1:  [54,  'white', ' St ', '>'] 
+  2:  [55,  'white', ' Id ', '>'] 
+  3:  [56,  'white', ' Id ', '<'] 
+  4:  [18,  'white', ' M1 ', '>'] 
+  5:  [19,  'white', ' M2 ', '<'] 
+  6:  [20,  'white', ' M3 ', '>'] 
+  7:  [21,  'white', ' M4 ', '<'] 
+  8:  [23,  'white', ' M5 ', '>'] 
+  9:  [31,  'white', ' M6 ', '<'] 
+  10: [22,  'white', ' M7 ', '>'] 
+  0:  [203, 'black', ' Na ', '<>'] # Nack
+  nack: @[0]
+  timeout: [  52, 'white', ' TO '] # Timeout Occured 
+  failure: ['red', 'white', ' Fail '] # General/Unknown failure
+  fail3:   ['red', 'white', ' WFx2 '] # These three represent 
+  fail2:   ['red', 'white', ' WFx3 '] # the WPS Failure codes
+  fail4:   ['red', 'white', ' WFx4 '] # 0x02-0x04 
+  beacon:  [  234, 'white', ' WB '] # Waiting for Beacon
+  associated: [23, 'white', ' Assoc '] # Associated
+
 # Exported functions for printing stuff and other such tomfoolery
 # ----------------------------------------------------------------------
+
+exports.statusBar = (btype, value, handling) ->
+  if btype is 'pinbar'
+    cdwrite('reset', 'blue', '\n |- Trying pin ')
+    cdwrite('bright', 'blue', "#{value}")
+    cdwrite('reset', 'blue', ' - [')
+    charm.push() # Save place for adding additional progress slices
+    cdwrite('reset','blue', '                                        ] ')
+    if handling
+      cdwrite 'reset', 'blue', '- ['
+      cdwrite 'bright', 28, " #{handling.totalChecked ? 0} "
+      cdwrite 'bright', 52, " #{handling.consecutiveFailures ? 0} "
+      cdwrite 'bright', 166," #{handling.totalFailures} "
+      cdwrite 'reset', 'blue', ']'
+    charm.pop()
+  else if btype is 'procbar'
+    cdwrite('reset', 250, '\n _- New reaver process spawned for ')
+    cdwrite('bright', 250, "#{value}")
+    cdwrite('reset', 250, ' - [')
+    charm.push()
+    cdwrite('reset', 250, '           ]')
+    now = new Date()
+    tstamp = "#{now.getHours()}:#{now.getMinutes()}:#{now.getSeconds()} #{now.getMonth()}-#{now.getDate()}-#{now.getFullYear()}"
+    cdwrite('reset','magenta', " @ #{tstamp}")
+    charm.pop()
+  else if btype is 'error'
+    cdwrite 'bright', 'red', "\n ¯- #{value} "
+    cdwrite 'reset', 'red', "- #{handling}\n"
+  else if btype is 'success'
+    cdwrite 'bright', 'green', "\n ¯-_-¯- #{value}"
+    cdwrite 'reset', 'green', " - #{handling}\n"
+  else 
+    bstyle = REAVER_BAR_STYLES[btype] ? [ 'blue','white',"#{value}" ]
+    cdwrite 'reset', bstyle[1], bstyle[0], bstyle[2]
+    cdwrite 'reset', ''
+  return @
 
 # Full blown title
 exports.title = (full=true)->
@@ -247,6 +306,28 @@ exports.washHit = (station, status, isdbq = false) ->
   if station.locked then @label c, '!', 'LOCKED'
   charm.write '\n'  
   return @
+
+# Print progress overview for active target of attack queue
+exports.attackProgress = (atkq) ->
+  a = atkq.active ? false 
+  r = atkq.reaver ? false
+  if a and r
+    charm.push()
+    cdwrite 'bright', 'blue', "\n //#{a.essid}"
+    cdwrite 'reset', 250, ' | '
+    @label 'magenta', 'rxok', r.status.foundBeacon
+    @label 'blue', 'assoc', r.status.associated
+    @label 'magenta', 'ch', r.status.channel
+    if r.status.locked then cdwrite 'bright', 'red', '¡LOCKED!'
+    cdwrite 'reset', 250, ' | '
+    @label 'blue', 'phase', r.status.phase
+    @label 'magenta', 'pin', r.status.pin
+    cdwrite 'reset', 250, ' | '
+    @label 'blue', 'msdepth', r.metrics.maxSeqDepth
+    @label 'magenta', 'checked', r.metrics.totalChecked
+    @label 'blue', 'failed', r.metrics.totalFailures
+    @label 'magenta', 'inarow', r.metrics.consecutiveFailures 
+    charm.pop()
 
 # Prints a "label", which is looks like: ltext/RTEXT (caps = bright)
 exports.label = (fg, ltext, rtext) ->
